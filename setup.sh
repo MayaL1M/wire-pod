@@ -258,9 +258,17 @@ function getSTT() {
         whichWhisperModel
         ./models/download-ggml-model.sh $whispermodel
         rm -rf build_go
-	cmake -B build_go \
-	-DCMAKE_POSITION_INDEPENDENT_CODE=ON
-	cmake --build build_go --config Release
+        if [[ ${UNAME} == *"Darwin"* ]]; then
+            cmake -B build_go \
+                -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+                -DWHISPER_OPENMP=OFF \
+                -DBUILD_SHARED_LIBS=ON
+        else
+            cmake -B build_go \
+                -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+                -DBUILD_SHARED_LIBS=ON
+        fi
+        cmake --build build_go --config Release
         cd ${origDir}
         echo "export WHISPER_MODEL=$whispermodel" >> ./chipper/source.sh
     else

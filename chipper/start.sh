@@ -66,19 +66,24 @@ if [[ ${STT_SERVICE} == "leopard" ]]; then
     if [[ -f ./chipper ]]; then
         export C_INCLUDE_PATH="../whisper.cpp"
         export LIBRARY_PATH="../whisper.cpp"
-        export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$(pwd)/../whisper.cpp:$(pwd)/../whisper.cpp/build:$(pwd)/../whisper.cpp/build/src"
+        export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$(pwd)/../whisper.cpp:$(pwd)/../whisper.cpp/build_go:$(pwd)/../whisper.cpp/build_go/src"
         export CGO_LDFLAGS="-L$(pwd)/../whisper.cpp/build_go/src"
         export CGO_CFLAGS="-I$(pwd)/../whisper.cpp"
+        export CGO_LDFLAGS="-L$(pwd)/../whisper.cpp/build_go -L$(pwd)/../whisper.cpp/build_go/src -L$(pwd)/../whisper.cpp/build_go/ggml/src -Wl,-rpath,$(pwd)/../whisper.cpp/build_go -Wl,-rpath,$(pwd)/../whisper.cpp/build_go/src -Wl,-rpath,$(pwd)/../whisper.cpp/build_go/ggml/src"
         ./chipper
     else
         export C_INCLUDE_PATH="../whisper.cpp"
         export LIBRARY_PATH="../whisper.cpp"
-        export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$(pwd)/../whisper.cpp:$(pwd)/../whisper.cpp/build:$(pwd)/../whisper.cpp/build_go/src:$(pwd)/../whisper.cpp/build_go/ggml/src"
-        export CGO_LDFLAGS="-L$(pwd)/../whisper.cpp -L$(pwd)/../whisper.cpp/build -L$(pwd)/../whisper.cpp/build/src -L$(pwd)/../whisper.cpp/build_go/ggml/src -L$(pwd)/../whisper.cpp/build_go/src"
+        export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$(pwd)/../whisper.cpp:$(pwd)/../whisper.cpp/build_go:$(pwd)/../whisper.cpp/build_go/src:$(pwd)/../whisper.cpp/build_go/ggml/src"
+        export CGO_LDFLAGS="-L$(pwd)/../whisper.cpp -L$(pwd)/../whisper.cpp/build_go -L$(pwd)/../whisper.cpp/build_go/src -L$(pwd)/../whisper.cpp/build_go/ggml/src -L$(pwd)/../whisper.cpp/build_go/src"
         export CGO_CFLAGS="-I$(pwd)/../whisper.cpp -I$(pwd)/../whisper.cpp/include -I$(pwd)/../whisper.cpp/ggml/include"
-        if [[ ${UNAME} == *"Darwin"* ]]; then
-            export GGML_METAL_PATH_RESOURCES="../whisper.cpp"
-            /usr/local/go/bin/go run -tags $GOTAGS -ldflags "-extldflags '-framework Foundation -framework Metal -framework MetalKit'" cmd/experimental/whisper.cpp/main.go
+if [[ ${UNAME} == *"Darwin"* ]]; then
+    export GGML_METAL_PATH_RESOURCES="../whisper.cpp"
+    export CC=/opt/homebrew/opt/llvm/bin/clang
+    export CXX=/opt/homebrew/opt/llvm/bin/clang++
+    export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
+    export CGO_LDFLAGS="-L$(pwd)/../whisper.cpp/build_go -L$(pwd)/../whisper.cpp/build_go/src -L$(pwd)/../whisper.cpp/build_go/ggml/src -Wl,-rpath,$(pwd)/../whisper.cpp/build_go -Wl,-rpath,$(pwd)/../whisper.cpp/build_go/src -Wl,-rpath,$(pwd)/../whisper.cpp/build_go/ggml/src"
+    /usr/local/go/bin/go run -tags $GOTAGS -ldflags "-extldflags '-framework Foundation -framework Metal -framework MetalKit'" cmd/experimental/whisper.cpp/main.go
         else
             /usr/local/go/bin/go run -tags $GOTAGS -ldflags="${GOLDFLAGS}" cmd/experimental/whisper.cpp/main.go
         fi
