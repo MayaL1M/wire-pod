@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+	"os/exec"
+	"path/filepath"
 
 	"github.com/fforchino/vector-go-sdk/pkg/vector"
 	"github.com/fforchino/vector-go-sdk/pkg/vectorpb"
@@ -150,7 +152,7 @@ func ModelIsSupported(cmd LLMCommand, model string) bool {
 }
 
 func CreatePrompt(origPrompt string, model string, isKG bool) string {
-	prompt := origPrompt + "\n\n" + "Keep in mind, user input comes from speech-to-text software, so respond accordingly. No special characters, especially these: & ^ * # @ - . No lists. No formatting."
+	prompt := origPrompt + "\n\n" + "Keep in mind, user input comes from speech-to-text software, so respond accordingly. No special characters, especially these: & ^ * # @ - ~ . No lists. No formatting."
 	if vars.APIConfig.Knowledge.CommandsEnable {
 		prompt = prompt + "\n\n" + "You are running ON an Anki Vector robot. You have a set of commands. If you include an emoji, I will make you start over. If you want to use a command but it doesn't exist or your desired parameter isn't in the list, avoid using the command. The format is {{command||parameter}}. You can embed these in sentences. Example: \"User: How are you feeling? | Response: \"{{playAnimationWI||sad}} I'm feeling sad...\". Square brackets ([]) are not valid.\n\nUse the playAnimation or playAnimationWI commands if you want to express emotion! You are very animated and good at following instructions. Animation takes precendence over words. You are to include many animations in your response.\n\nHere is every valid command:"
 		for _, cmd := range ValidLLMCommands {
@@ -174,46 +176,55 @@ func CreatePrompt(origPrompt string, model string, isKG bool) string {
 }
 
 func GetActionsFromString(input string) []RobotAction {
-	splitInput := strings.Split(input, "{{")
-	if len(splitInput) == 1 {
-		return []RobotAction{
-			{
-				Action:    ActionSayText,
-				Parameter: input,
-			},
-		}
-	}
-	var actions []RobotAction
-	for _, spl := range splitInput {
-		if strings.TrimSpace(spl) == "" {
-			continue
-		}
-		if !strings.Contains(spl, "}}") {
-			// sayText
-			action := RobotAction{
-				Action:    ActionSayText,
-				Parameter: strings.TrimSpace(spl),
-			}
-			actions = append(actions, action)
-			continue
-		}
+    splitInput := strings.Split(input, "{{")
+    if len(splitInput) == 1 {
+        return []RobotAction{
+            {
+                Action:    ActionSayText,
+                Parameter: input,
+            },
+        }
+    }
 
-		cmdPlusParam := strings.Split(strings.TrimSpace(strings.Split(spl, "}}")[0]), "||")
-		cmd := strings.TrimSpace(cmdPlusParam[0])
-		param := strings.TrimSpace(cmdPlusParam[1])
-		action := CmdParamToAction(cmd, param)
-		if action.Action != -1 {
-			actions = append(actions, action)
-		}
-		if len(strings.Split(spl, "}}")) != 1 {
-			action := RobotAction{
-				Action:    ActionSayText,
-				Parameter: strings.TrimSpace(strings.Split(spl, "}}")[1]),
-			}
-			actions = append(actions, action)
-		}
-	}
-	return actions
+    var actions []RobotAction
+    for _, spl := range splitInput {
+        if strings.TrimSpace(spl) == "" {
+            continue
+        }
+        if !strings.Contains(spl, "}}") {
+            actions = append(actions, RobotAction{
+                Action:    ActionSayText,
+                Parameter: strings.TrimSpace(spl),
+            })
+            continue
+        }
+
+        // }} 기준으로 명령어와 뒤에 올 텍스트 분리
+        splParts := strings.Split(spl, "}}")
+        cmdSection := strings.TrimSpace(splParts[0])
+
+        // || 구분자 체크 로직 추가
+        cmdPlusParam := strings.Split(cmdSection, "||")
+        cmd := strings.TrimSpace(cmdPlusParam[0])
+        param := ""
+        if len(cmdPlusParam) > 1 {
+            param = strings.TrimSpace(cmdPlusParam[1])
+        }
+
+        action := CmdParamToAction(cmd, param)
+        if action.Action != -1 {
+            actions = append(actions, action)
+        }
+
+        // 뒤에 따라오는 텍스트 처리
+        if len(splParts) > 1 && strings.TrimSpace(splParts[1]) != "" {
+            actions = append(actions, RobotAction{
+                Action:    ActionSayText,
+                Parameter: strings.TrimSpace(splParts[1]),
+            })
+        }
+    }
+    return actions
 }
 
 func CmdParamToAction(cmd, param string) RobotAction {
@@ -289,6 +300,11 @@ func DoSayText(input string, robot *vector.Vector) error {
 
 	// just before vector speaks
 	removeSpecialCharacters(input)
+
+	if (vars.APIConfig.STT.Language == "ko-KR") {
+		err := DoSayText_Korean(robot, input)
+		return err
+	}
 
 	if (vars.APIConfig.STT.Language != "en-US" && vars.APIConfig.Knowledge.Provider == "openai") || vars.APIConfig.Knowledge.OpenAIVoiceWithEnglish {
 		err := DoSayText_OpenAI(robot, input)
@@ -390,7 +406,112 @@ func DoSayText_OpenAI(robot *vector.Vector, input string) error {
 	return nil
 }
 
+func resample22to16(input []byte) []byte {
+    // 16-bit PCM이므로 2바이트가 1샘플입니다.
+    inputSamples := len(input) / 2
+    ratio := 22050.0 / 16000.0
+    outputSamples := int(float64(inputSamples) / ratio)
+    output := make([]byte, outputSamples*2)
+
+    for i := 0; i < outputSamples; i++ {
+        // Nearest Neighbor: 출력 인덱스에 대응하는 입력 인덱스를 찾습니다.
+        inputIdx := int(float64(i) * ratio)
+        if inputIdx*2+1 < len(input) {
+            output[i*2] = input[inputIdx*2]
+            output[i*2+1] = input[inputIdx*2+1]
+        }
+    }
+    return output
+}
+
+func DoSayText_Korean(robot *vector.Vector, input string) error {
+    if strings.TrimSpace(input) == "" { return nil }
+
+    tmpAiff := filepath.Join(os.TempDir(), "speech.aiff")
+    tmpRaw := filepath.Join(os.TempDir(), "speech.raw")
+    userName := "seonwoo.lim"
+
+    // 1. say 명령어로 임시 파일 생성
+    cmdSay := exec.Command("sudo", "-u", userName, "say", "-v", "Yuna", "-r", "250", "-o", tmpAiff, input)
+    if out, err := cmdSay.CombinedOutput(); err != nil {
+        fmt.Printf("say 에러: %s\n", string(out))
+        return err
+    }
+
+    // 2. ffmpeg로 벡터용 순수 PCM(Header-less) 변환
+    // -f s16le: 16bit Little Endian
+    // -ar 16000: 16kHz
+    // -ac 1: Mono (단일 채널)
+    cmdFfmpeg := exec.Command("ffmpeg", "-y", "-i", tmpAiff, "-f", "s16le", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", tmpRaw)
+    if out, err := cmdFfmpeg.CombinedOutput(); err != nil {
+        fmt.Printf("ffmpeg 에러: %s\n", string(out))
+        return err
+    }
+
+    // 3. 변환된 순수 PCM 읽기
+    rawPCM, _ := os.ReadFile(tmpRaw)
+    os.Remove(tmpAiff)
+    os.Remove(tmpRaw)
+
+    fmt.Printf("[DEBUG] 노이즈 제거 완료 (%d bytes)\n", len(rawPCM))
+
+    // 4. Vector 전송 (기존 로직 동일)
+    vclient, _ := robot.Conn.ExternalAudioStreamPlayback(context.Background())
+    vclient.Send(&vectorpb.ExternalAudioStreamRequest{
+        AudioRequestType: &vectorpb.ExternalAudioStreamRequest_AudioStreamPrepare{
+            AudioStreamPrepare: &vectorpb.ExternalAudioStreamPrepare{
+                AudioFrameRate: 16000,
+                AudioVolume:    100,
+            },
+        },
+    })
+
+	// 끝났음을 알릴 채널 생성
+	done := make(chan bool)
+
+	go func() {
+		fmt.Println("[DEBUG] Step 3: 스트리밍 시작")
+		chunkSize := 1024
+		for i := 0; i < len(rawPCM); i += chunkSize {
+			end := i + chunkSize
+			if end > len(rawPCM) { end = len(rawPCM) }
+			
+			vclient.Send(&vectorpb.ExternalAudioStreamRequest{
+				AudioRequestType: &vectorpb.ExternalAudioStreamRequest_AudioStreamChunk{
+					AudioStreamChunk: &vectorpb.ExternalAudioStreamChunk{
+						AudioChunkSizeBytes: uint32(end - i),
+						AudioChunkSamples:   rawPCM[i:end],
+					},
+				},
+			})
+			// 16kHz 16bit mono에서 1024바이트는 약 32ms 분량입니다.
+			// 30~32ms가 가장 적당합니다.
+			time.Sleep(time.Millisecond * 32)
+		}
+
+		// 모든 데이터를 보낸 후 완료 신호 전송
+		vclient.Send(&vectorpb.ExternalAudioStreamRequest{
+			AudioRequestType: &vectorpb.ExternalAudioStreamRequest_AudioStreamComplete{
+				AudioStreamComplete: &vectorpb.ExternalAudioStreamComplete{},
+			},
+		})
+		
+		fmt.Println("[DEBUG] Step 4: 데이터 전송 완료")
+		done <- true // 메인 함수에 완료 신호 보냄
+	}()
+
+	// 신호가 올 때까지 여기서 대기 (Blocking)
+	<-done
+
+	// 마지막 문장이 물리적으로 스피커에서 나올 수 있게 아주 잠깐 더 기다려줍니다. (가장 중요!)
+	time.Sleep(time.Millisecond * 500) 
+
+	fmt.Println("[DEBUG] Step 5: 함수 종료")
+	return nil
+}
+
 func DoGetImage(msgs []openai.ChatCompletionMessage, param string, robot *vector.Vector, stopStop chan bool) {
+	logger.Println("LLM debug: messages: " + fmt.Sprint(msgs))
 	stopImaging := false
 	go func() {
 		for range stopStop {
@@ -528,6 +649,7 @@ func DoGetImage(msgs []openai.ChatCompletionMessage, param string, robot *vector
 	go func() {
 		for {
 			response, err := stream.Recv()
+			logger.Println("LLM debug: response: " + response.Choices[0].Delta.Content)
 			if errors.Is(err, io.EOF) {
 				isDone = true
 				newStr := fullRespSlice[0]
